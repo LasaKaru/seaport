@@ -19,7 +19,7 @@
     "seaport-core": "^1.5.0",
     "seaport-sol": "^1.5.0",
     "seaport-types": "^0.0.1",
-    "solady": "^0.0.84"
+    "solady": "^0.0.218"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-chai-matchers": "^1.0.5",
