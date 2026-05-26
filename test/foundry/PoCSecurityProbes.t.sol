@@ -243,15 +243,63 @@ contract PoCSecurityProbes is BaseOrderTest {
         });
 
         CriteriaResolver[] memory none = new CriteriaResolver[](0);
-        bool filled;
-        try consideration.fulfillAdvancedOrder{ value: 10 }(
+
+        // Strengthened P7: must revert with the SPECIFIC BadFraction() error.
+        // Without this stricter check, a mutation that removes the
+        // numerator>denominator guard slips past, because downstream
+        // arithmetic produces an insufficient-balance revert for the wrong
+        // reason. We assert the right layer caught it.
+        vm.expectRevert(abi.encodeWithSignature("BadFraction()"));
+        consideration.fulfillAdvancedOrder{ value: 10 }(
             adv, none, bytes32(0), address(this)
-        ) {
+        );
+    }
+
+    // ---------- P9: junk signature must revert ----------
+    // Added after mutation-testing revealed that M4 (sig bypass) was caught
+    // by only 2/28 probes. P9 directly exercises the signature path.
+    function test_P9_junkSignatureRejected() public {
+        test721_1.mint(alice, 199);
+        addErc721OfferItem(address(test721_1), 199);
+        addEthConsiderationItem(payable(alice), 1);
+        configureOrderParameters(alice);
+        uint256 counter = consideration.getCounter(alice);
+        configureOrderComponents(counter);
+
+        // Junk 65-byte sig that does not match alice's key.
+        bytes memory junk = new bytes(65);
+        for (uint256 i; i < 65; ++i) junk[i] = bytes1(uint8(i + 1));
+        // Make sure v is 27 or 28 to ensure ECDSA path is tried.
+        junk[64] = bytes1(uint8(27));
+
+        Order memory order = Order(baseOrderParameters, junk);
+
+        bool filled;
+        try consideration.fulfillOrder{ value: 1 }(order, bytes32(0)) {
             filled = true;
-        } catch {
-            filled = false;
-        }
-        assertEq(filled, false, "FINDING P7: invalid fraction (numerator>denominator) accepted");
+        } catch { filled = false; }
+        assertEq(filled, false, "FINDING P9: junk signature accepted");
+    }
+
+    // ---------- P10: signature from wrong key must revert ----------
+    function test_P10_wrongKeySignatureRejected() public {
+        test721_1.mint(alice, 198);
+        addErc721OfferItem(address(test721_1), 198);
+        addEthConsiderationItem(payable(alice), 1);
+        configureOrderParameters(alice); // offerer = alice
+        uint256 counter = consideration.getCounter(alice);
+        configureOrderComponents(counter);
+        bytes32 hash = consideration.getOrderHash(baseOrderComponents);
+
+        // Sign with BOB's key, not alice's. Offerer is alice → must fail.
+        bytes memory wrongSig = signOrder(consideration, bobPk, hash);
+        Order memory order = Order(baseOrderParameters, wrongSig);
+
+        bool filled;
+        try consideration.fulfillOrder{ value: 1 }(order, bytes32(0)) {
+            filled = true;
+        } catch { filled = false; }
+        assertEq(filled, false, "FINDING P10: wrong-key signature accepted");
     }
 
     // ---------- P8: partial-fill conservation ----------
