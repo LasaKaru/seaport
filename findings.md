@@ -272,6 +272,70 @@ Combined with the prior probe/mutation/fuzz work (80+ attack probes, mutation te
 
 ---
 
+## Targeted high/critical hunt — value-extraction PoCs (no finding)
+
+A dedicated pass attempted to extract real value on-chain across the three surfaces
+where a high/critical Seaport bug would most plausibly live. Each hypothesis was
+driven to a runnable Foundry test measuring before/after balance **deltas** (not
+absolute balances, since the harness pre-funds accounts). Every attempt either
+reverted or netted zero. The scratch exploit tests were removed after the
+conclusions were recorded here; the defenses they probed are summarized below.
+
+### Native ETH / `msg.value` accounting — DEFENDED (one known non-issue)
+- **Pure `msg.value` double-count** across two native-consideration orders from an
+  empty contract: reverts with `InsufficientNativeTokensSupplied`
+  (`OrderCombiner.sol:849-852`). The per-execution `gt(amount, selfbalance())` guard
+  stops it. DEFENDED.
+- **Native-offer match cycle:** native offer items in a signed FULL_OPEN order are
+  rejected by the match path. Reverts, zero delta. DEFENDED.
+- **Sweep of resident ETH** via the end-of-call `selfbalance()` refund
+  (`OrderCombiner.sol:987-999`): real behavior, but **not a vulnerability**. ETH only
+  resides in Seaport if force-fed via `selfdestruct` (the attacker must irrevocably
+  destroy their own ETH to place it there) — there is no victim, no profit, and no
+  primitive to drain ETH from an empty contract or from other users. Seaport holds
+  zero ETH between transactions by design (the refund sweep guarantees it). This is
+  the same documented, out-of-scope class as the prior L1 finding.
+
+### Multi-order fulfillment aggregation — DEFENDED (all 4 hypotheses)
+- **Double-spend one offer item** toward two consideration obligations: second
+  fulfillment re-reads the zeroed amount and reverts `MissingItemAmount`
+  (offer amount zeroed at `FulfillmentApplier.sol:400`).
+- **Consideration key collision, different recipients:** recipient is part of the
+  aggregation hash (`FulfillmentApplier.sol:732`), so it reverts
+  `InvalidFulfillmentComponentData`.
+- **ERC721/ERC1155 same-id collision:** `itemType` is part of the offer aggregation
+  hash (`FulfillmentApplier.sol:413`), so distinct types cannot be summed.
+- **Receive offer without paying** (empty consideration group): reverts
+  `MissingFulfillmentComponentOnAggregation`, backstopped by `_revertConsiderationNotMet`
+  (`OrderCombiner.sol:959-961`).
+- All produced zero positive attacker delta.
+
+### Reentrancy / callback state confusion — DEFENDED (all 4 hypotheses)
+- **ERC1155 receiver re-enters** to fulfill a second order mid-flight: re-entrant
+  `fulfillOrder` reverts `NoReentrantCalls` (transient-storage guard armed until
+  `OrderCombiner.sol:1024`). No extra item stolen.
+- **Read-only reentrancy:** the view getters `getOrderStatus`/`getCounter` are
+  reachable during a callback (unguarded by design), so mid-flight state *can be
+  observed* — but no state-mutating path is reachable while the guard is armed, so the
+  observation cannot be converted into value loss inside Seaport. (Worth noting for
+  integrators who build logic on Seaport getters; not a Seaport-side bug.)
+- **Contract offerer shorts the fulfiller:** yanking its own approval during
+  `generateOrder` makes the offer transfer fail and the whole fill reverts atomically —
+  fulfiller pays nothing, receives nothing. DEFENDED.
+- **ERC777-style transfer-hook token** re-entering to double-fulfill: guard is set
+  before any transfer, so the hook's re-entrant call reverts; order fills exactly once.
+
+### Tip / `additionalRecipients` mechanism — DEFENDED
+The order hash is recomputed from the first `totalOriginalConsiderationItems` items of
+the *supplied* consideration array (`Assertions.sol:79-94`, `GettersAndDerivers.sol:74`),
+and the supplied length must be ≥ original (`Assertions.sol:106-114`). A fulfiller can
+only *append* trailing tip items they pay for themselves; dropping, reducing,
+reordering, or altering any signed consideration item changes the derived hash and
+fails signature verification. No "buyer pays less than the seller signed" path.
+
+**Conclusion:** no high/critical on-chain vulnerability was found. The only confirmed
+defects remain the two low-severity off-chain helper bugs (#1, #2 above).
+
 ## Reproducing the PoCs
 
 ```bash
